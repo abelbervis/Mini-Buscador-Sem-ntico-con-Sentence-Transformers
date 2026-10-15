@@ -1,47 +1,83 @@
 import os
 import logging
+import sqlite3
+import pickle
 import numpy as np
 
-# 1. Configuración para evitar avisos molestos de Hugging Face
+# 1. Configuración estricta para evitar cualquier aviso o llamada opcional al HF Hub
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["HF_HUB_OFFLINE"] = "1"  # Fuerza el modo completamente offline (usa caché local)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 from sentence_transformers import SentenceTransformer, util
 
 
-class MiniVectorCatalog:
-    """Catálogo sencillo en memoria RAM para buscar textos por similitud semántica."""
+class SQLiteVectorCatalog:
+    """Catálogo basado en SQLite y Vectores para persistencia local."""
 
-    def __init__(self):
-        self.products = []      # Lista para guardar los nombres/metadatos
-        self.embeddings = None  # Matriz donde se acumulan los vectores numéricos
+    def __init__(self, db_name="vector_store.db"):
+        self.db_name = db_name
+        self._init_db()
 
-    def insert_product(self, product_id, name, vector):
-        """Agrega un elemento y su vector asociado al catálogo."""
-        self.products.append({"id": product_id, "name": name})
+    def _init_db(self):
+        """Crea la tabla si no existe."""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    embedding BLOB NOT NULL
+                )
+            """)
+            conn.commit()
+
+    def insert(self, content: str, vector: np.ndarray):
+        """Inserta un nuevo texto y su vector serializado en SQLite."""
+        vector_blob = pickle.dumps(vector.astype(np.float32))
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO items (content, embedding) VALUES (?, ?)",
+                (content, vector_blob)
+            )
+            conn.commit()
+        return f"✅ Elemento insertado: '{content}'"
+
+    def get_all(self):
+        """Recupera todos los registros de la base de datos."""
+        with sqlite3.connect(self.db_name) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, content, embedding FROM items")
+            rows = cursor.fetchall()
         
-        new_vector = np.array(vector, dtype=np.float32)
+        items = []
+        embeddings = []
+        for row in rows:
+            items.append({"id": row[0], "content": row[1]})
+            embeddings.append(pickle.loads(row[2]))
+        
+        if not embeddings:
+            return [], None
+            
+        return items, np.array(embeddings, dtype=np.float32)
 
-        if self.embeddings is None:
-            self.embeddings = np.array([new_vector])
-        else:
-            self.embeddings = np.vstack([self.embeddings, new_vector])
-
-        return f"✅ Producto '{name}' indexado con éxito."
-
-    def search_similar(self, query_vector, top_k=2):
-        """Compara un vector de búsqueda con todos los vectores guardados."""
-        if self.embeddings is None or len(self.products) == 0:
+    def search_similar(self, query_vector: np.ndarray, top_k=3):
+        """Busca los elementos más similares calculando la similitud de coseno."""
+        items, embeddings = self.get_all()
+        if not items or embeddings is None:
             return []
 
         q_vec = np.array(query_vector, dtype=np.float32)
 
-        # Cálculo de Similitud de Coseno utilizando álgebra lineal con NumPy
-        dot_product = np.dot(self.embeddings, q_vec)
-        norm_a = np.linalg.norm(self.embeddings, axis=1)
+        # Cálculo de Similitud de Coseno con NumPy
+        dot_product = np.dot(embeddings, q_vec)
+        norm_a = np.linalg.norm(embeddings, axis=1)
         norm_b = np.linalg.norm(q_vec)
-        scores = dot_product / (norm_a * norm_b)
+        
+        # Evitar división por cero
+        scores = dot_product / (norm_a * norm_b + 1e-8)
 
         # Ordenar de mayor a menor similitud
         best_indices = np.argsort(scores)[::-1][:top_k]
@@ -49,74 +85,55 @@ class MiniVectorCatalog:
         results = []
         for idx in best_indices:
             results.append({
-                "product": self.products[idx]["name"],
+                "content": items[idx]["content"],
                 "score": round(float(scores[idx]), 4)
             })
         return results
 
 
 # =====================================================================
-# EJECUCIÓN PRINCIPAL
+# EJECUCIÓN PRINCIPAL CON SQLITE
 # =====================================================================
+if __name__ == "__main__":
+    print("=" * 65)
+    print(" 1. CARGANDO EL MODELO DE SENTENCE-TRANSFORMERS ")
+    print("=" * 65)
+    model = SentenceTransformer("all-MiniLM-L6-v2")
 
-print("=" * 65)
-print(" 1. CARGANDO EL MODELO DE SENTENCE-TRANSFORMERS EN MEMORIA ")
-print("=" * 65)
-# Esto descarga (la 1ra vez) y carga en memoria el diccionario de conceptos vectoriales
-model = SentenceTransformer("all-MiniLM-L6-v2")
+    # Inicializamos nuestra base de datos SQLite persistente
+    db = SQLiteVectorCatalog("vector_store.db")
 
+    items, _ = db.get_all()
+    
+    # Si la base de datos está vacía, sembramos datos iniciales (máx 200 registros de prueba)
+    if len(items) == 0:
+        print("\n📥 Base de datos vacía. Insertando datos de prueba iniciales...")
+        datos_iniciales = [
+            "Curso completo de desarrollo web con JavaScript y Node.js",
+            "Aprende los fundamentos de Python y ciencia de datos desde cero",
+            "Receta fácil y rápida para hacer un pastel de chocolate casero",
+            "Introducción a la programación orientada a objetos usando Python",
+            "Guía de bases de datos relacionales con SQLite y SQL",
+            "Fundamentos de inteligencia artificial y modelos de lenguaje LLM"
+        ]
+        for texto in datos_iniciales:
+            vec = model.encode(texto)
+            db.insert(texto, vec)
+        print(f"✅ Se insertaron {len(datos_iniciales)} registros iniciales.")
 
-print("\n" + "=" * 65)
-print(" 2. EJEMPLO DE BÚSQUEDA EN CATÁLOGO VIRTUAL ")
-print("=" * 65)
+    print("\n" + "=" * 65)
+    print(" 2. REALIZANDO BÚSQUEDA SEMÁNTICA DESDE SQLITE ")
+    print("=" * 65)
 
-catalog = MiniVectorCatalog()
+    consulta = "necesito aprender a programar en python"
+    print(f"Búsqueda: '{consulta}'\n")
 
-# Indexamos varios textos convirtiéndolos a vectores con model.encode()
-catalog.insert_product(1, "Hamburguesa Doble con Queso", model.encode("Hamburguesa Doble con Queso"))
-catalog.insert_product(2, "Ensalada César Fresca", model.encode("Ensalada César Fresca"))
-catalog.insert_product(3, "Pizza Pepperoni Mediana", model.encode("Pizza Pepperoni Mediana"))
+    # Generar vector de consulta
+    vector_consulta = model.encode(consulta)
+    
+    # Buscar en SQLite
+    resultados = db.search_similar(vector_consulta, top_k=3)
 
-consulta_catalogo = "quiero algo con carne"
-print(f"Búsqueda del usuario: '{consulta_catalogo}'")
-
-# Convertimos la pregunta del usuario en vector y buscamos en el catálogo
-vector_pregunta = model.encode(consulta_catalogo)
-resultados = catalog.search_similar(vector_pregunta, top_k=2)
-
-print("\nResultados encontrados:")
-for res in resultados:
-    print(f" -> {res['product']} (Similitud: {res['score']})")
-
-
-print("\n" + "=" * 65)
-print(" 3. EJEMPLO DE COMPARACIÓN DIRECTA CON UMBRAL DE COINCIDENCIA ")
-print("=" * 65)
-
-consulta = "programacion"
-candidatos = [
-    "Curso completo de desarrollo web con JavaScript",
-    "Aprende los fundamentos de Python desde cero",
-    "Receta fácil para hacer un pastel de chocolate",
-    "Introducción a la programación usando Python",
-]
-
-print(f"Consulta principal: '{consulta}'\n" + "-" * 50)
-
-# model.encode() convierte los textos en tensores numéricos para comparar todo de un jalón
-vector_consulta = model.encode(consulta, convert_to_tensor=True)
-vectores_candidatos = model.encode(candidatos, convert_to_tensor=True)
-
-# util.cos_sim calcula matemáticamente qué tan cerca están los significados (0 a 1)
-puntuaciones = util.cos_sim(vector_consulta, vectores_candidatos)[0]
-
-UMBRAL_COINCIDENCIA = 0.55
-
-for i, candidato in enumerate(candidatos):
-    score = puntuaciones[i].item()
-    hubo_coincidencia = score >= UMBRAL_COINCIDENCIA
-
-    estado = "✅ SÍ HUBO COINCIDENCIA" if hubo_coincidencia else "❌ NO HUBO COINCIDENCIA"
-
-    print(f"Texto: '{candidato}'")
-    print(f"-> Resultado: {estado} (Similitud: {score:.2f})\n")
+    print("Resultados más relevantes:")
+    for i, res in enumerate(resultados, 1):
+        print(f" {i}. [{res['score']}] {res['content']}")
