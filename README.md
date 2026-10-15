@@ -6,7 +6,7 @@ Este proyecto es un ejemplo práctico y educativo en Python que demuestra cómo 
 
 ## 🚀 ¿Qué hace este proyecto?
 
-El script principal (`tester.py`) incluye dos ejemplos clave:
+El script principal (`main.py`) incluye dos ejemplos clave:
 
 1. **Catálogo Vectorial en Memoria (`MiniVectorCatalog`):** Simula una pequeña base de datos donde puedes indexar textos (como productos o artículos) convirtiéndolos en vectores numéricos, y buscar elementos similares por significado (similitud de coseno) en milisegundos.
 2. **Coincidencia con Umbral de Confianza:** Compara una consulta de búsqueda contra una lista de candidatos y determina automáticamente si **sí hubo o no coincidencia** superando un límite porcentual de similitud.
@@ -35,7 +35,7 @@ torch
 Una vez instaladas las dependencias, simplemente ejecuta el script en tu terminal:
 
 ```bash
-python tester.py
+python main.py
 ```
 
 ---
