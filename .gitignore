@@ -1,0 +1,20 @@
+# Entornos virtuales
+venv/
+env/
+ENV/
+.env
+
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Bases de datos locales o archivos de datos generados
+*.db
+*.sqlite
+*.sqlite3
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
